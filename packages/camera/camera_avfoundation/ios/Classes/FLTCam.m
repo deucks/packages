@@ -209,29 +209,60 @@ NSString *const errorMethod = @"error";
   _motionManager = [[CMMotionManager alloc] init];
   [_motionManager startAccelerometerUpdates];
 
+  int32_t width = 1080;
+  switch (_mediaSettings.resolutionPreset) {
+    case FCPPlatformResolutionPresetMax:
+      width = 2160;
+      break;
+    case FCPPlatformResolutionPresetUltraHigh:
+      width = 2160;
+      break;
+    case FCPPlatformResolutionPresetVeryHigh:
+      width = 1080;
+      break;
+    case FCPPlatformResolutionPresetHigh:
+      width = 720;
+      break;
+    case FCPPlatformResolutionPresetMedium:
+      width = 720;
+      break;
+    case FCPPlatformResolutionPresetLow:
+      width = 720;
+      break;
+  }
+
+
   if (_mediaSettings.framesPerSecond) {
     // The frame rate can be changed only on a locked for configuration device.
     if ([mediaSettingsAVWrapper lockDevice:_captureDevice error:error]) {
       [_mediaSettingsAVWrapper beginConfigurationForSession:_videoCaptureSession];
 
+
+      
       // Possible values for presets are hard-coded in FLT interface having
       // corresponding AVCaptureSessionPreset counterparts.
       // If _resolutionPreset is not supported by camera there is
       // fallback to lower resolution presets.
       // If none can be selected there is error condition.
       if (![self setCaptureSessionPreset:_mediaSettings.resolutionPreset withError:error]) {
+        
+        
         [_videoCaptureSession commitConfiguration];
         [_captureDevice unlockForConfiguration];
         return nil;
       }
 
-      // Set frame rate with 1/10 precision allowing not integral values.
-      int fpsNominator = floor([_mediaSettings.framesPerSecond doubleValue] * 10.0);
-      CMTime duration = CMTimeMake(10, fpsNominator);
 
-      [mediaSettingsAVWrapper setMinFrameDuration:duration onDevice:_captureDevice];
-      [mediaSettingsAVWrapper setMaxFrameDuration:duration onDevice:_captureDevice];
 
+      // // Set frame rate with 1/10 precision allowing not integral values.
+      // int fpsNominator = floor([_mediaSettings.framesPerSecond doubleValue] * 10.0);
+      // CMTime duration = CMTimeMake(10, fpsNominator);
+
+      // [mediaSettingsAVWrapper setMinFrameDuration:duration onDevice:_captureDevice];
+      // [mediaSettingsAVWrapper setMaxFrameDuration:duration onDevice:_captureDevice];
+      if (_captureDevice.deviceType != NULL){
+        [self setupCameraWithLensType:_captureDevice.deviceType fps:@100 resolutionHeight:width];
+      }
       [_mediaSettingsAVWrapper commitConfigurationForSession:_videoCaptureSession];
       [_mediaSettingsAVWrapper unlockDevice:_captureDevice];
     } else {
@@ -249,6 +280,85 @@ NSString *const errorMethod = @"error";
 
   return self;
 }
+
+- (AVCaptureDevice *)cameraWithLensType:(NSString *)lensType {
+
+      // Create a device discovery session using AVCaptureDeviceDiscoverySession
+    AVCaptureDeviceDiscoverySession *session = [AVCaptureDeviceDiscoverySession 
+        discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera,
+                                          AVCaptureDeviceTypeBuiltInTelephotoCamera,
+                                          AVCaptureDeviceTypeBuiltInUltraWideCamera]
+                               mediaType:AVMediaTypeVideo
+                                position:AVCaptureDevicePositionUnspecified];
+
+    // Log device types and localized names
+    for (AVCaptureDevice *device in session.devices) {
+        NSLog(@"Device types: %@", device.deviceType);
+        NSLog(@"Device localizedName: %@", device.localizedName);
+        if ([device.deviceType isEqualToString:lensType]) {
+          return device;
+        }
+    }
+
+    return nil;
+}
+
+- (AVCaptureDeviceFormat *)bestFormatForDevice:(AVCaptureDevice *)device
+                                         usingFPS:(CGFloat)targetFPS
+                                  andResolutionHeight:(int)targetHeight {
+    AVCaptureDeviceFormat *selectedFormat = nil;
+    double maxResolution = 0;
+    for (AVCaptureDeviceFormat *format in device.formats) {
+       //NSLog(@"avaliable format format:%@", format);
+        CMFormatDescriptionRef desc = format.formatDescription;
+        CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(desc);
+        for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+            if (range.minFrameRate <= targetFPS && targetFPS <= range.maxFrameRate) {
+                NSLog(@"avaliable fps formats:%@", format);
+                NSLog(@"target height:%d", targetHeight);
+                NSLog(@"Dimensions height:%d", dimensions.height);
+                // if (dimensions.height >= targetHeight && dimensions.width * dimensions.height > maxResolution) {
+                //     NSLog(@"selected format:%@", format);
+                //     selectedFormat = format;
+                //     maxResolution = dimensions.width * dimensions.height;
+                // }
+                if (dimensions.height == targetHeight) {
+                    NSLog(@"selected format:%@", format);
+                    selectedFormat = format;
+                    maxResolution = dimensions.width * dimensions.height;
+                }
+            }
+        }
+    }
+    
+    return selectedFormat;
+}
+
+- (void)setupCameraWithLensType:(NSString *)lensType fps:(NSNumber *)fps resolutionHeight:(int)height {
+    AVCaptureDevice *camera = [self cameraWithLensType:lensType];
+    if (!camera) {
+        NSLog(@"No camera available for type %@", lensType);
+        return;
+    }
+    
+    AVCaptureDeviceFormat *bestFormat = [self bestFormatForDevice:camera usingFPS:[fps floatValue] andResolutionHeight:height];
+    if (!bestFormat) {
+        NSLog(@"No suitable format found for type %@", lensType);
+        return;
+    }
+
+    NSError *error = nil;
+    if ([camera lockForConfiguration:&error]) {
+        camera.activeFormat = bestFormat;
+        camera.activeVideoMinFrameDuration = CMTimeMake(1, [fps intValue]);
+        camera.activeVideoMaxFrameDuration = CMTimeMake(1, [fps intValue]);
+        [camera unlockForConfiguration];
+        NSLog(@"Camera setup completed with lens type %@", lensType);
+    } else {
+        NSLog(@"Unable to lock camera for configuration: %@", error);
+    }
+}
+
 
 - (AVCaptureConnection *)createConnection:(NSError **)error {
   // Setup video capture input.
