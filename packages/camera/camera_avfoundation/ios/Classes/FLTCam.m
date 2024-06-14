@@ -251,13 +251,6 @@ NSString *const errorMethod = @"error";
       }
 
 
-
-      // // Set frame rate with 1/10 precision allowing not integral values.
-      // int fpsNominator = floor([_mediaSettings.framesPerSecond doubleValue] * 10.0);
-      // CMTime duration = CMTimeMake(10, fpsNominator);
-
-      // [mediaSettingsAVWrapper setMinFrameDuration:duration onDevice:_captureDevice];
-      // [mediaSettingsAVWrapper setMaxFrameDuration:duration onDevice:_captureDevice];
       if (_captureDevice.deviceType != NULL){
         [self setupCameraWithLensType:_captureDevice.deviceType fps:@100 resolutionHeight:width];
       }
@@ -277,6 +270,26 @@ NSString *const errorMethod = @"error";
   [self updateOrientation];
 
   return self;
+}
+
+- (void)enableOpticalImageStabilizationForDevice:(AVCaptureDevice *)device {
+    if ([device isLockingFocusWithCustomLensPositionSupported] && device.activeFormat.videoStabilizationSupported) {
+        NSError *error = nil;
+        if ([device lockForConfiguration:&error]) {
+            if ([device.activeFormat isVideoStabilizationModeSupported:AVCaptureVideoStabilizationModeCinematic]) {
+                AVCaptureConnection *connection = [self.captureVideoOutput connectionWithMediaType:AVMediaTypeVideo];
+                connection.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeCinematic;
+                NSLog(@"Optical Image Stabilization enabled.");
+            } else {
+                NSLog(@"Cinematic Video Stabilization is not supported.");
+            }
+            [device unlockForConfiguration];
+        } else {
+            NSLog(@"Error locking device for configuration: %@", error.localizedDescription);
+        }
+    } else {
+        NSLog(@"Optical Image Stabilization is not supported.");
+    }
 }
 
 - (AVCaptureDevice *)cameraWithLensType:(NSString *)lensType {
@@ -357,6 +370,10 @@ NSString *const errorMethod = @"error";
         CMTime duration = CMTimeMake(10, fpsNominator);
         camera.activeVideoMinFrameDuration = duration;
         camera.activeVideoMaxFrameDuration = duration;
+
+        // Enable Optical Image Stabilization
+        [self enableOpticalImageStabilizationForDevice:camera];
+
         [camera unlockForConfiguration];
         NSLog(@"Camera setup completed with lens type %@", lensType);
     } else {
