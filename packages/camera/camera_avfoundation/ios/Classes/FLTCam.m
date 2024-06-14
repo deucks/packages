@@ -245,8 +245,6 @@ NSString *const errorMethod = @"error";
       // fallback to lower resolution presets.
       // If none can be selected there is error condition.
       if (![self setCaptureSessionPreset:_mediaSettings.resolutionPreset withError:error]) {
-        
-        
         [_videoCaptureSession commitConfiguration];
         [_captureDevice unlockForConfiguration];
         return nil;
@@ -306,26 +304,29 @@ NSString *const errorMethod = @"error";
 - (AVCaptureDeviceFormat *)bestFormatForDevice:(AVCaptureDevice *)device
                                          usingFPS:(CGFloat)targetFPS
                                   andResolutionHeight:(int)targetHeight {
-    AVCaptureDeviceFormat *selectedFormat = nil;
     double maxResolution = 0;
+    double lowestMaxFrameRate = DBL_MAX; // Initialize to the highest possible value
+    AVCaptureDeviceFormat *selectedFormat = nil;
+
     for (AVCaptureDeviceFormat *format in device.formats) {
-       //NSLog(@"avaliable format format:%@", format);
         CMFormatDescriptionRef desc = format.formatDescription;
         CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(desc);
+        
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
             if (range.minFrameRate <= targetFPS && targetFPS <= range.maxFrameRate) {
-                NSLog(@"avaliable fps formats:%@", format);
+                NSLog(@"available fps formats:%@", format);
                 NSLog(@"target height:%d", targetHeight);
                 NSLog(@"Dimensions height:%d", dimensions.height);
-                // if (dimensions.height >= targetHeight && dimensions.width * dimensions.height > maxResolution) {
-                //     NSLog(@"selected format:%@", format);
-                //     selectedFormat = format;
-                //     maxResolution = dimensions.width * dimensions.height;
-                // }
+                
+                // Check if the dimensions height matches the target height
                 if (dimensions.height == targetHeight) {
-                    NSLog(@"selected format:%@", format);
-                    selectedFormat = format;
-                    maxResolution = dimensions.width * dimensions.height;
+                    // Check if the max framerate is lower than the lowest max framerate found so far
+                    if (range.maxFrameRate < lowestMaxFrameRate) {
+                        NSLog(@"selected format:%@", format);
+                        selectedFormat = format;
+                        maxResolution = dimensions.width * dimensions.height;
+                        lowestMaxFrameRate = range.maxFrameRate; // Update the lowest max framerate
+                    }
                 }
             }
         }
@@ -350,8 +351,12 @@ NSString *const errorMethod = @"error";
     NSError *error = nil;
     if ([camera lockForConfiguration:&error]) {
         camera.activeFormat = bestFormat;
-        camera.activeVideoMinFrameDuration = CMTimeMake(1, [fps intValue]);
-        camera.activeVideoMaxFrameDuration = CMTimeMake(1, [fps intValue]);
+
+        // Set frame rate with 1/10 precision allowing not integral values.
+        int fpsNominator = floor([fps doubleValue] * 10.0);
+        CMTime duration = CMTimeMake(10, fpsNominator);
+        camera.activeVideoMinFrameDuration = duration;
+        camera.activeVideoMaxFrameDuration = duration;
         [camera unlockForConfiguration];
         NSLog(@"Camera setup completed with lens type %@", lensType);
     } else {
