@@ -210,25 +210,53 @@ NSString *const errorMethod = @"error";
   [_motionManager startAccelerometerUpdates];
 
   int32_t width = 1080;
-  switch (_mediaSettings.resolutionPreset) {
-    case FCPPlatformResolutionPresetMax:
-      width = 2160;
-      break;
-    case FCPPlatformResolutionPresetUltraHigh:
-      width = 2160;
-      break;
-    case FCPPlatformResolutionPresetVeryHigh:
-      width = 1080;
-      break;
-    case FCPPlatformResolutionPresetHigh:
-      width = 720;
-      break;
-    case FCPPlatformResolutionPresetMedium:
-      width = 720;
-      break;
-    case FCPPlatformResolutionPresetLow:
-      width = 720;
-      break;
+  
+  if (UIDeviceOrientationIsLandscape(_deviceOrientation)) {
+      NSLog(@"Device is landscape");
+    switch (_mediaSettings.resolutionPreset) {
+      case FCPPlatformResolutionPresetMax:
+        width = 3840;
+        break;
+      case FCPPlatformResolutionPresetUltraHigh:
+        width = 3840;
+        break;
+      case FCPPlatformResolutionPresetVeryHigh:
+        width = 1920;
+        break;
+      case FCPPlatformResolutionPresetHigh:
+        width = 1280;
+        break;
+      case FCPPlatformResolutionPresetMedium:
+        width = 1280;
+        break;
+      case FCPPlatformResolutionPresetLow:
+        width = 1280;
+        break;
+    }
+  }
+    
+  if (UIDeviceOrientationIsPortrait(_deviceOrientation)) {
+      NSLog(@"Device is portrait");
+    switch (_mediaSettings.resolutionPreset) {
+      case FCPPlatformResolutionPresetMax:
+        width = 2160;
+        break;
+      case FCPPlatformResolutionPresetUltraHigh:
+        width = 2160;
+        break;
+      case FCPPlatformResolutionPresetVeryHigh:
+        width = 1080;
+        break;
+      case FCPPlatformResolutionPresetHigh:
+        width = 720;
+        break;
+      case FCPPlatformResolutionPresetMedium:
+        width = 720;
+        break;
+      case FCPPlatformResolutionPresetLow:
+        width = 720;
+        break;
+    }
   }
 
 
@@ -276,12 +304,15 @@ NSString *const errorMethod = @"error";
     if ([device isLockingFocusWithCustomLensPositionSupported] && device.activeFormat.videoStabilizationSupported) {
         NSError *error = nil;
         if ([device lockForConfiguration:&error]) {
+            AVCaptureConnection *connection = [self.captureVideoOutput connectionWithMediaType:AVMediaTypeVideo];
             if ([device.activeFormat isVideoStabilizationModeSupported:AVCaptureVideoStabilizationModeCinematic]) {
-                AVCaptureConnection *connection = [self.captureVideoOutput connectionWithMediaType:AVMediaTypeVideo];
                 connection.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeCinematic;
-                NSLog(@"Optical Image Stabilization enabled.");
+                NSLog(@"Cinematic Video Stabilization enabled.");
+            } else if ([device.activeFormat isVideoStabilizationModeSupported:AVCaptureVideoStabilizationModeStandard]) {
+                connection.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
+                NSLog(@"Standard Video Stabilization enabled.");
             } else {
-                NSLog(@"Cinematic Video Stabilization is not supported.");
+                NSLog(@"Neither Cinematic nor Standard Video Stabilization is supported.");
             }
             [device unlockForConfiguration];
         } else {
@@ -291,6 +322,7 @@ NSString *const errorMethod = @"error";
         NSLog(@"Optical Image Stabilization is not supported.");
     }
 }
+
 
 - (AVCaptureDevice *)cameraWithLensType:(NSString *)lensType {
 
@@ -340,7 +372,18 @@ NSString *const errorMethod = @"error";
                         maxResolution = dimensions.width * dimensions.height;
                         lowestMaxFrameRate = range.maxFrameRate; // Update the lowest max framerate
                     }
+                } else if (dimensions.width == targetHeight) {
+                    // Check if the max framerate is lower than the lowest max framerate found so far
+                    if (range.maxFrameRate < lowestMaxFrameRate) {
+                        NSLog(@"selected format:%@", format);
+                        selectedFormat = format;
+                        maxResolution = dimensions.width * dimensions.height;
+                        lowestMaxFrameRate = range.maxFrameRate; // Update the lowest max framerate
+                    }
                 }
+                
+                // Check if the dimensions height matches the target height
+                
             }
         }
     }
@@ -370,6 +413,7 @@ NSString *const errorMethod = @"error";
         CMTime duration = CMTimeMake(10, fpsNominator);
         camera.activeVideoMinFrameDuration = duration;
         camera.activeVideoMaxFrameDuration = duration;
+        
 
         // Enable Optical Image Stabilization
         [self enableOpticalImageStabilizationForDevice:camera];
