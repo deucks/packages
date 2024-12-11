@@ -109,6 +109,7 @@ public final class CameraUtils {
       try {
         String cameraName = String.valueOf(i);
         cameraNames.remove(cameraName);
+        Log.i("CameraUtils", "Checking camera step 1: " + cameraName);
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
         Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
         cameras.add(details);
@@ -130,6 +131,7 @@ public final class CameraUtils {
         continue;
       }
 
+      Log.i("CameraUtils", "Checking camera step 2: " + cameraName);
       CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
       Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
       cameras.add(details);
