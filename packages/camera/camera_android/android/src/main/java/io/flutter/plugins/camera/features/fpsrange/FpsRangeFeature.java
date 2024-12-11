@@ -44,7 +44,6 @@ public class FpsRangeFeature extends CameraFeature<Range<Integer>> {
       if (ranges != null) {
         for (Range<Integer> range : ranges) {
           int upper = range.getUpper();
-
           if (upper >= 10) {
             if (currentSetting == null || upper > currentSetting.getUpper()) {
               currentSetting = range;
@@ -54,7 +53,7 @@ public class FpsRangeFeature extends CameraFeature<Range<Integer>> {
       }
 
       Log.d("FpsRangeFeature", "Current FPS range: " + currentSetting);
-      Log.d("FpsRangeFeature", "All ranges: " + ranges);
+      Log.d("FpsRangeFeature", "All ranges: " + ranges.toString());
     }
   }
 
