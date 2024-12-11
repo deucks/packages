@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import android.util.Log;
+import java.util.Arrays;
 
 /** Provides various utilities for camera. */
 public final class CameraUtils {
