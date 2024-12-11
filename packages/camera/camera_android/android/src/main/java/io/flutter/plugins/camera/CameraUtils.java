@@ -105,6 +105,14 @@ public final class CameraUtils {
     boolean expectingCamera = true;
     int i = 0;
 
+    for (String cameraId : cameraNames) {
+        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+        boolean isLogical = characteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE) != null;
+        boolean isPhysical = characteristics.getPhysicalCameraIds().size() > 0;
+
+        Log.i("CameraInfo", "Camera ID: " + cameraId + ", Logical: " + isLogical + ", Physical: " + isPhysical);
+    }
+
     while (expectingCamera) {
       try {
         String cameraName = String.valueOf(i);
