@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import android.util.Log;
 
 /** Provides various utilities for camera. */
 public final class CameraUtils {
@@ -104,7 +105,7 @@ public final class CameraUtils {
     List<Map<String, Object>> cameras = new ArrayList<>();
 
     for (String cameraId : cameraIds) {
-      Log.d("CameraUtils", "camera loop - current: " + cameraId);
+      Log.d("CameraUtils", "getAvailableCameras: cameraId: " + cameraId);
       try {
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
 
