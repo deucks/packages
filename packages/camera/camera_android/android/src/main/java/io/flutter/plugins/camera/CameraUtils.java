@@ -98,38 +98,8 @@ public final class CameraUtils {
     public static List<Map<String, Object>> getAvailableCameras(Activity activity)
           throws CameraAccessException {
     CameraManager cameraManager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
-
-    List<String> cameraNames = new ArrayList<>(Arrays.asList(cameraManager.getCameraIdList()));
+    String[] cameraNames = cameraManager.getCameraIdList();
     List<Map<String, Object>> cameras = new ArrayList<>();
-
-    boolean expectingCamera = true;
-    int i = 0;
-
-    for (String cameraId : cameraNames) {
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
-        boolean isLogical = characteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE) != null;
-        boolean isPhysical = characteristics.getPhysicalCameraIds().size() > 0;
-
-        Log.i("CameraInfo", "Camera ID: " + cameraId + ", Logical: " + isLogical + ", Physical: " + isPhysical);
-    }
-
-    while (expectingCamera) {
-      try {
-        String cameraName = String.valueOf(i);
-        cameraNames.remove(cameraName);
-        Log.i("CameraUtils", "Checking camera step 1: " + cameraName);
-        CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
-        Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
-        Log.i("CameraUtils", "Camera details: " + details.toString());
-        cameras.add(details);
-        i++;
-      } catch (Exception e) {
-        // retrieving Camera failed, most probably there is no other physical non-removable camera.
-        Log.i("CameraUtils", "Exception: " + e.toString()); 
-        expectingCamera = false;
-      }
-    }
-
     for (String cameraName : cameraNames) {
       int cameraId;
       try {
@@ -141,32 +111,99 @@ public final class CameraUtils {
         continue;
       }
 
-      Log.i("CameraUtils", "Checking camera step 2: " + cameraName);
+      HashMap<String, Object> details = new HashMap<>();
       CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
-      Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
+      details.put("name", cameraName);
+      int sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+      details.put("sensorOrientation", sensorOrientation);
+
+      int lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
+      switch (lensFacing) {
+        case CameraMetadata.LENS_FACING_FRONT:
+          details.put("lensFacing", "front");
+          break;
+        case CameraMetadata.LENS_FACING_BACK:
+          details.put("lensFacing", "back");
+          break;
+        case CameraMetadata.LENS_FACING_EXTERNAL:
+          details.put("lensFacing", "external");
+          break;
+      }
       cameras.add(details);
     }
     return cameras;
   }
 
-  private static Map<String, Object> serializeCameraCharacteristics(
-          String name, CameraCharacteristics cameraCharacteristics) {
-    HashMap<String, Object> details = new HashMap<>();
-    details.put("name", name);
-    int sensorOrientation = cameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-    details.put("sensorOrientation", sensorOrientation);
-    int lensFacing = cameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
-    switch (lensFacing) {
-      case CameraMetadata.LENS_FACING_FRONT:
-        details.put("lensFacing", "front");
-        break;
-      case CameraMetadata.LENS_FACING_BACK:
-        details.put("lensFacing", "back");
-        break;
-      case CameraMetadata.LENS_FACING_EXTERNAL:
-        details.put("lensFacing", "external");
-        break;
-    }
-    return details;
-  }
+  // private static Map<String, Object> serializeCameraCharacteristics(
+  //         String name, CameraCharacteristics cameraCharacteristics) {
+  //   HashMap<String, Object> details = new HashMap<>();
+  //   details.put("name", name);
+  //   int sensorOrientation = cameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+  //   details.put("sensorOrientation", sensorOrientation);
+  //   int lensFacing = cameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
+  //   switch (lensFacing) {
+  //     case CameraMetadata.LENS_FACING_FRONT:
+  //       details.put("lensFacing", "front");
+  //       break;
+  //     case CameraMetadata.LENS_FACING_BACK:
+  //       details.put("lensFacing", "back");
+  //       break;
+  //     case CameraMetadata.LENS_FACING_EXTERNAL:
+  //       details.put("lensFacing", "external");
+  //       break;
+  //   }
+  //   return details;
+  // }
 }
+
+
+// CameraManager cameraManager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
+
+//     List<String> cameraNames = new ArrayList<>(Arrays.asList(cameraManager.getCameraIdList()));
+//     List<Map<String, Object>> cameras = new ArrayList<>();
+
+//     boolean expectingCamera = true;
+//     int i = 0;
+
+//     for (String cameraId : cameraNames) {
+//         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+//         boolean isLogical = characteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE) != null;
+//         boolean isPhysical = characteristics.getPhysicalCameraIds().size() > 0;
+
+//         Log.i("CameraInfo", "Camera ID: " + cameraId + ", Logical: " + isLogical + ", Physical: " + isPhysical);
+//     }
+
+//     while (expectingCamera) {
+//       try {
+//         String cameraName = String.valueOf(i);
+//         cameraNames.remove(cameraName);
+//         Log.i("CameraUtils", "Checking camera step 1: " + cameraName);
+//         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
+//         Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
+//         Log.i("CameraUtils", "Camera details: " + details.toString());
+//         cameras.add(details);
+//         i++;
+//       } catch (Exception e) {
+//         // retrieving Camera failed, most probably there is no other physical non-removable camera.
+//         Log.i("CameraUtils", "Exception: " + e.toString()); 
+//         expectingCamera = false;
+//       }
+//     }
+
+//     for (String cameraName : cameraNames) {
+//       int cameraId;
+//       try {
+//         cameraId = Integer.parseInt(cameraName, 10);
+//       } catch (NumberFormatException e) {
+//         cameraId = -1;
+//       }
+//       if (cameraId < 0) {
+//         continue;
+//       }
+
+//       Log.i("CameraUtils", "Checking camera step 2: " + cameraName);
+//       CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
+//       Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
+//       cameras.add(details);
+//     }
+//     return cameras;
