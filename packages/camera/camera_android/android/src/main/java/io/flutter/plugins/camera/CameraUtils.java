@@ -112,10 +112,12 @@ public final class CameraUtils {
         Log.i("CameraUtils", "Checking camera step 1: " + cameraName);
         CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraName);
         Map<String, Object> details = serializeCameraCharacteristics(cameraName, characteristics);
+        Log.i("CameraUtils", "Camera details: " + details.toString());
         cameras.add(details);
         i++;
       } catch (Exception e) {
         // retrieving Camera failed, most probably there is no other physical non-removable camera.
+        Log.i("CameraUtils", "Exception: " + e.toString()); 
         expectingCamera = false;
       }
     }
