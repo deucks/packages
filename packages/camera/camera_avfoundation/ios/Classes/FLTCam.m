@@ -353,54 +353,78 @@ NSString *const errorMethod = @"error";
     double lowestMaxFrameRate = DBL_MAX; // Initialize to the highest possible value
     AVCaptureDeviceFormat *selectedFormat = nil;
 
+    NSLog(@"[fpsdbg] bestFormatForDevice device=%@ uniqueID=%@ targetFPS=%.1f targetHeight=%d totalFormats=%lu",
+          device.localizedName, device.uniqueID, (double)targetFPS, targetHeight, (unsigned long)device.formats.count);
+
+    int formatIndex = 0;
     for (AVCaptureDeviceFormat *format in device.formats) {
         CMFormatDescriptionRef desc = format.formatDescription;
         CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(desc);
-        
+
+        NSMutableString *rangesDesc = [NSMutableString string];
+        for (AVFrameRateRange *r in format.videoSupportedFrameRateRanges) {
+          [rangesDesc appendFormat:@"[%.1f-%.1f] ", r.minFrameRate, r.maxFrameRate];
+        }
+        NSLog(@"[fpsdbg]   format[%d] dims=%dx%d ranges=%@", formatIndex,
+              dimensions.width, dimensions.height, rangesDesc);
+        formatIndex++;
+
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
             if (range.minFrameRate <= targetFPS && targetFPS <= range.maxFrameRate) {
-                NSLog(@"available fps formats:%@", format);
-                NSLog(@"target height:%d", targetHeight);
-                NSLog(@"Dimensions height:%d", dimensions.height);
-                
-                // Check if the dimensions height matches the target height
                 if (dimensions.height == targetHeight) {
-                    // Check if the max framerate is lower than the lowest max framerate found so far
                     if (range.maxFrameRate < lowestMaxFrameRate) {
-                        NSLog(@"selected format:%@", format);
+                        NSLog(@"[fpsdbg]     -> CANDIDATE (height match) %dx%d max=%.1f", dimensions.width, dimensions.height, range.maxFrameRate);
                         selectedFormat = format;
                         maxResolution = dimensions.width * dimensions.height;
-                        lowestMaxFrameRate = range.maxFrameRate; // Update the lowest max framerate
+                        lowestMaxFrameRate = range.maxFrameRate;
                     }
                 } else if (dimensions.width == targetHeight) {
-                    // Check if the max framerate is lower than the lowest max framerate found so far
                     if (range.maxFrameRate < lowestMaxFrameRate) {
-                        NSLog(@"selected format:%@", format);
+                        NSLog(@"[fpsdbg]     -> CANDIDATE (width match) %dx%d max=%.1f", dimensions.width, dimensions.height, range.maxFrameRate);
                         selectedFormat = format;
                         maxResolution = dimensions.width * dimensions.height;
-                        lowestMaxFrameRate = range.maxFrameRate; // Update the lowest max framerate
+                        lowestMaxFrameRate = range.maxFrameRate;
                     }
                 }
-                
-                // Check if the dimensions height matches the target height
-                
             }
         }
     }
-    
+
+    if (selectedFormat) {
+        CMVideoDimensions selDims = CMVideoFormatDescriptionGetDimensions(selectedFormat.formatDescription);
+        NSMutableString *selRanges = [NSMutableString string];
+        for (AVFrameRateRange *r in selectedFormat.videoSupportedFrameRateRanges) {
+          [selRanges appendFormat:@"[%.1f-%.1f] ", r.minFrameRate, r.maxFrameRate];
+        }
+        NSLog(@"[fpsdbg] bestFormat picked: %dx%d ranges=%@", selDims.width, selDims.height, selRanges);
+    } else {
+        NSLog(@"[fpsdbg] bestFormat picked: nil (no format supports targetFPS=%.1f at height/width=%d)",
+              (double)targetFPS, targetHeight);
+    }
+
     return selectedFormat;
 }
 
 - (void)setupCameraWithLensType:(NSString *)lensType fps:(NSNumber *)fps resolutionHeight:(int)height {
+    NSLog(@"[fpsdbg] === setupCameraWithLensType START ===");
+    NSLog(@"[fpsdbg] lensType=%@ requestedFPS=%@ resolutionHeight=%d", lensType, fps, height);
+    NSLog(@"[fpsdbg] _captureDevice uniqueID=%@ localizedName=%@",
+          _captureDevice.uniqueID, _captureDevice.localizedName);
+
     AVCaptureDevice *camera = [self cameraWithLensType:lensType];
     if (!camera) {
-        NSLog(@"No camera available for type %@", lensType);
+        NSLog(@"[fpsdbg] No camera available for type %@", lensType);
         return;
     }
-    
+
+    NSLog(@"[fpsdbg] cameraWithLensType returned uniqueID=%@ localizedName=%@",
+          camera.uniqueID, camera.localizedName);
+    NSLog(@"[fpsdbg] same-as-capture-device? %@",
+          [camera.uniqueID isEqualToString:_captureDevice.uniqueID] ? @"YES" : @"NO");
+
     AVCaptureDeviceFormat *bestFormat = [self bestFormatForDevice:camera usingFPS:[fps floatValue] andResolutionHeight:height];
     if (!bestFormat) {
-        NSLog(@"No suitable format found for type %@", lensType);
+        NSLog(@"[fpsdbg] No suitable format found for type %@; aborting", lensType);
         return;
     }
 
@@ -408,20 +432,38 @@ NSString *const errorMethod = @"error";
     if ([camera lockForConfiguration:&error]) {
         camera.activeFormat = bestFormat;
 
+        // Verify what the device thinks its active format is now.
+        NSMutableString *activeRanges = [NSMutableString string];
+        for (AVFrameRateRange *r in camera.activeFormat.videoSupportedFrameRateRanges) {
+          [activeRanges appendFormat:@"[%.1f-%.1f] ", r.minFrameRate, r.maxFrameRate];
+        }
+        CMVideoDimensions activeDims = CMVideoFormatDescriptionGetDimensions(camera.activeFormat.formatDescription);
+        NSLog(@"[fpsdbg] post-set activeFormat dims=%dx%d ranges=%@",
+              activeDims.width, activeDims.height, activeRanges);
+
         // Set frame rate with 1/10 precision allowing not integral values.
         int fpsNominator = floor([fps doubleValue] * 10.0);
         CMTime duration = CMTimeMake(10, fpsNominator);
-        camera.activeVideoMinFrameDuration = duration;
-        camera.activeVideoMaxFrameDuration = duration;
-        
+        NSLog(@"[fpsdbg] about to set activeVideoMinFrameDuration to fps=%.1f (duration=%d/%d)",
+              [fps doubleValue], duration.value, duration.timescale);
+
+        @try {
+            camera.activeVideoMinFrameDuration = duration;
+            camera.activeVideoMaxFrameDuration = duration;
+            NSLog(@"[fpsdbg] frame duration set OK");
+        } @catch (NSException *exception) {
+            NSLog(@"[fpsdbg] *** EXCEPTION setting frame duration: %@ reason=%@",
+                  exception.name, exception.reason);
+            NSLog(@"[fpsdbg] Camera will continue at default frame rate of active format.");
+        }
 
         // Enable Optical Image Stabilization
         [self enableOpticalImageStabilizationForDevice:camera];
 
         [camera unlockForConfiguration];
-        NSLog(@"Camera setup completed with lens type %@", lensType);
+        NSLog(@"[fpsdbg] === setupCameraWithLensType END (lens %@) ===", lensType);
     } else {
-        NSLog(@"Unable to lock camera for configuration: %@", error);
+        NSLog(@"[fpsdbg] Unable to lock camera for configuration: %@", error);
     }
 }
 
