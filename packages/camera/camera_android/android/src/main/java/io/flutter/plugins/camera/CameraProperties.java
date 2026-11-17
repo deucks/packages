@@ -37,6 +37,20 @@ public interface CameraProperties {
   Range<Integer>[] getControlAutoExposureAvailableTargetFpsRanges();
 
   /**
+   * Returns the frame rate ranges a constrained high-speed session records at the given size.
+   *
+   * <p>Empty when the camera has no high-speed recording at that size. A high-speed session is
+   * the only kind that records above the rates of {@link
+   * #getControlAutoExposureAvailableTargetFpsRanges()}; see {@link
+   * android.hardware.camera2.params.StreamConfigurationMap#getHighSpeedVideoFpsRangesFor(Size)}.
+   *
+   * @param size the size of the recording.
+   * @return Range<Integer>[] the frame rate ranges of a high-speed session at that size.
+   */
+  @NonNull
+  Range<Integer>[] getHighSpeedVideoFpsRangesFor(@NonNull Size size);
+
+  /**
    * Returns the maximum and minimum exposure compensation values for @see
    * android.control.aeExposureCompensation, in counts of @see android.control.aeCompensationStep,
    * that are supported by this camera device.

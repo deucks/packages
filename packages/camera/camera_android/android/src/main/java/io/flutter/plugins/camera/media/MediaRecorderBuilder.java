@@ -26,6 +26,14 @@ public class MediaRecorderBuilder {
     @Nullable public final Integer videoBitrate;
     @Nullable public final Integer audioBitrate;
 
+    /**
+     * True for a recording made in a constrained high-speed session, at {@link #fps}. The recorder
+     * is then told the rate frames arrive at as well as the rate they play at. That is how the
+     * high-speed path was measured (a Pixel 9 Pro Fold held 119.9 frames a second for five
+     * minutes); it has not been tried without.
+     */
+    public final boolean highSpeed;
+
     public RecordingParameters(@NonNull String outputFilePath) {
       this(outputFilePath, null, null, null);
     }
@@ -35,10 +43,20 @@ public class MediaRecorderBuilder {
         @Nullable Integer fps,
         @Nullable Integer videoBitrate,
         @Nullable Integer audioBitrate) {
+      this(outputFilePath, fps, videoBitrate, audioBitrate, false);
+    }
+
+    public RecordingParameters(
+        @NonNull String outputFilePath,
+        @Nullable Integer fps,
+        @Nullable Integer videoBitrate,
+        @Nullable Integer audioBitrate,
+        boolean highSpeed) {
       this.outputFilePath = outputFilePath;
       this.fps = fps;
       this.videoBitrate = videoBitrate;
       this.audioBitrate = audioBitrate;
+      this.highSpeed = highSpeed;
     }
   }
 
@@ -155,6 +173,10 @@ public class MediaRecorderBuilder {
               : camcorderProfile.videoFrameRate);
       mediaRecorder.setVideoSize(
           camcorderProfile.videoFrameWidth, camcorderProfile.videoFrameHeight);
+    }
+
+    if (parameters.highSpeed && parameters.fps != null && parameters.fps.intValue() > 0) {
+      mediaRecorder.setCaptureRate(parameters.fps);
     }
 
     mediaRecorder.setOutputFile(parameters.outputFilePath);

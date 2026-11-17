@@ -11,10 +11,12 @@ import android.content.Context;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
@@ -137,6 +139,70 @@ class Camera
   @VisibleForTesting MediaRecorder mediaRecorder;
   /** True when recording video. */
   boolean recordingVideo;
+
+  /**
+   * The frame rate a recording in a constrained high-speed session runs at, or null when the app
+   * asked for nothing above the regular rates or the camera has no such session at the
+   * recording's size. See {@link RecordingRate}.
+   */
+  @VisibleForTesting @Nullable Integer highSpeedFps;
+
+  /**
+   * The frame rate the media recorder is given for a regular recording, or null to leave it to
+   * the recording profile. It is the rate the app asked for unless that is above anything a
+   * regular session records.
+   */
+  @Nullable private Integer regularRecordingFps;
+
+  /** True while the recording in progress runs in a constrained high-speed session. */
+  @VisibleForTesting boolean highSpeedRecording;
+
+  /** True once a high-speed session has failed to start on this camera. It is not tried again. */
+  private boolean highSpeedFailed;
+
+  /**
+   * How long a high-speed recording waits for the exposure to settle before it starts regardless.
+   * Settling took about half a second on a Pixel 9 Pro Fold.
+   */
+  @VisibleForTesting static final long HIGH_SPEED_SETTLE_MS = 1000;
+
+  /**
+   * What starts the recorder of a high-speed recording, held until the exposure has settled; null
+   * at every other time. See {@link #onHighSpeedExposure}.
+   */
+  @Nullable private Runnable highSpeedStart;
+
+  /**
+   * The app's call to start a high-speed recording, answered when the recorder starts and not
+   * before, so the app times the take from its first frame.
+   */
+  @Nullable private Result pendingStartResult;
+
+  /**
+   * A high-speed session's repeating callback: the usual one, which also watches the exposure
+   * until the recorder has started.
+   */
+  private final CameraCaptureSession.CaptureCallback highSpeedCaptureCallback =
+      new CameraCaptureSession.CaptureCallback() {
+        @Override
+        public void onCaptureProgressed(
+            @NonNull CameraCaptureSession session,
+            @NonNull CaptureRequest request,
+            @NonNull CaptureResult partialResult) {
+          cameraCaptureCallback.onCaptureProgressed(session, request, partialResult);
+        }
+
+        @Override
+        public void onCaptureCompleted(
+            @NonNull CameraCaptureSession session,
+            @NonNull CaptureRequest request,
+            @NonNull TotalCaptureResult result) {
+          cameraCaptureCallback.onCaptureCompleted(session, request, result);
+          if (highSpeedStart != null) {
+            onHighSpeedExposure(result.get(CaptureResult.CONTROL_AE_STATE));
+          }
+        }
+      };
   /** True when the preview is paused. */
   @VisibleForTesting boolean pausedPreview;
 
@@ -239,7 +305,29 @@ class Camera
     Integer recordingFps = null;
 
     if (videoCaptureSettings.fps != null && videoCaptureSettings.fps.intValue() > 0) {
-      recordingFps = videoCaptureSettings.fps;
+      // A rate above the regular ones records in a high-speed session where the camera has one,
+      // and at its highest regular rate where it has not. The preview runs at the regular rate
+      // either way.
+      final Size captureSize = cameraFeatures.getResolution().getCaptureSize();
+      final RecordingRate rate =
+          RecordingRate.choose(
+              videoCaptureSettings.fps,
+              cameraProperties.getControlAutoExposureAvailableTargetFpsRanges(),
+              captureSize == null || !SdkCapabilityChecker.supportsSessionConfiguration()
+                  ? null
+                  : cameraProperties.getHighSpeedVideoFpsRangesFor(captureSize));
+      recordingFps = rate.regularFps;
+      regularRecordingFps = rate.regularFps;
+      highSpeedFps = rate.highSpeedFps;
+      Log.i(
+          TAG,
+          "Asked for "
+              + videoCaptureSettings.fps
+              + " frames a second: regular sessions run at "
+              + rate.regularFps
+              + (rate.highSpeedFps == null
+                  ? ", no high-speed session"
+                  : ", a high-speed session records at " + rate.highSpeedFps));
     } else {
       if (SdkCapabilityChecker.supportsEncoderProfiles()) {
         EncoderProfiles encoderProfiles = getRecordingProfile();
@@ -288,6 +376,13 @@ class Camera
       }
       feature.updateBuilder(requestBuilder);
     }
+    if (highSpeedRecording && highSpeedFps != null && requestBuilder == previewRequestBuilder) {
+      // A high-speed session takes only its own frame rate ranges, and only a fixed one records
+      // every frame at the rate. The feature keeps the regular range for the preview that follows.
+      requestBuilder.set(
+          CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+          new Range<Integer>(highSpeedFps, highSpeedFps));
+    }
   }
 
   private void prepareMediaRecorder(String outputFilePath) throws IOException {
@@ -306,24 +401,18 @@ class Camera
     // TODO(camsim99): Revert changes that allow legacy code to be used when recordingProfile is
     // null once this has largely been fixed on the Android side.
     // https://github.com/flutter/flutter/issues/119668
+    final MediaRecorderBuilder.RecordingParameters parameters =
+        new MediaRecorderBuilder.RecordingParameters(
+            outputFilePath,
+            highSpeedRecording ? highSpeedFps : regularRecordingFps,
+            videoCaptureSettings.videoBitrate,
+            videoCaptureSettings.audioBitrate,
+            highSpeedRecording);
+
     if (SdkCapabilityChecker.supportsEncoderProfiles() && getRecordingProfile() != null) {
-      mediaRecorderBuilder =
-          new MediaRecorderBuilder(
-              getRecordingProfile(),
-              new MediaRecorderBuilder.RecordingParameters(
-                  outputFilePath,
-                  videoCaptureSettings.fps,
-                  videoCaptureSettings.videoBitrate,
-                  videoCaptureSettings.audioBitrate));
+      mediaRecorderBuilder = new MediaRecorderBuilder(getRecordingProfile(), parameters);
     } else {
-      mediaRecorderBuilder =
-          new MediaRecorderBuilder(
-              getRecordingProfileLegacy(),
-              new MediaRecorderBuilder.RecordingParameters(
-                  outputFilePath,
-                  videoCaptureSettings.fps,
-                  videoCaptureSettings.videoBitrate,
-                  videoCaptureSettings.audioBitrate));
+      mediaRecorderBuilder = new MediaRecorderBuilder(getRecordingProfileLegacy(), parameters);
     }
 
     mediaRecorder =
@@ -581,8 +670,7 @@ class Camera
 
     try {
       if (!pausedPreview) {
-        captureSession.setRepeatingRequest(
-            previewRequestBuilder.build(), cameraCaptureCallback, backgroundHandler);
+        setRepeating(previewRequestBuilder.build(), cameraCaptureCallback);
       }
 
       if (onSuccessCallback != null) {
@@ -593,6 +681,270 @@ class Camera
       onErrorCallback.onError("cameraAccess", "Camera is closed: " + e.getMessage());
     } catch (CameraAccessException e) {
       onErrorCallback.onError("cameraAccess", e.getMessage());
+    } catch (IllegalArgumentException e) {
+      // A high-speed session refuses a request it cannot run at its rate.
+      onErrorCallback.onError("cameraAccess", e.getMessage());
+    }
+  }
+
+  /**
+   * Repeats a request for as long as the session runs. A constrained high-speed session takes no
+   * single request: it is given the burst the session makes of one, a request for every frame in
+   * the time of one preview frame.
+   */
+  private void setRepeating(
+      @NonNull CaptureRequest request, @Nullable CameraCaptureSession.CaptureCallback callback)
+      throws CameraAccessException {
+    if (captureSession instanceof CameraConstrainedHighSpeedCaptureSession) {
+      captureSession.setRepeatingBurst(
+          ((CameraConstrainedHighSpeedCaptureSession) captureSession)
+              .createHighSpeedRequestList(request),
+          callback == cameraCaptureCallback ? highSpeedCaptureCallback : callback,
+          backgroundHandler);
+    } else {
+      captureSession.setRepeatingRequest(request, callback, backgroundHandler);
+    }
+  }
+
+  /** Takes what is waiting to start the high-speed recording, so that it runs once. */
+  @Nullable
+  private synchronized Runnable takeHighSpeedStart() {
+    final Runnable start = highSpeedStart;
+    highSpeedStart = null;
+    return start;
+  }
+
+  /**
+   * Starts a waiting high-speed recording once the exposure has settled.
+   *
+   * <p>The preview before it ran in a regular session, whose frames can be exposed for twice as
+   * long as a 120 frames a second one allows. The high-speed session starts from that exposure cut
+   * short, a stop too dark in a dim room, and the device brightens it over the next half second
+   * (measured on a Pixel 9 Pro Fold: a first frame at 80% of the settled brightness). Recorded,
+   * that is a fade-up at the head of every take. So the session first runs on the preview alone,
+   * for at most {@link #HIGH_SPEED_SETTLE_MS}, and the recorder joins once the exposure holds.
+   *
+   * @param aeState the {@link CaptureResult#CONTROL_AE_STATE} of a frame of the session; null on
+   *     a device that does not report one, which counts as settled.
+   */
+  @VisibleForTesting
+  void onHighSpeedExposure(@Nullable Integer aeState) {
+    final boolean settled =
+        aeState == null
+            || aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED
+            || aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
+            || aeState == CaptureResult.CONTROL_AE_STATE_LOCKED;
+    if (settled) {
+      final Runnable start = takeHighSpeedStart();
+      if (start != null) {
+        start.run();
+      }
+    }
+  }
+
+  /** Answers the app's call to start a high-speed recording, once. */
+  private synchronized void answerStart(@Nullable String error) {
+    final Result result = pendingStartResult;
+    pendingStartResult = null;
+    if (result == null) {
+      return;
+    }
+    if (error == null) {
+      dartMessenger.finish(result, null);
+    } else {
+      dartMessenger.error(result, "videoRecordingFailed", error, null);
+    }
+  }
+
+  /** Sends a request once, as a burst where the session is a constrained high-speed one. */
+  private void captureOnce(
+      @NonNull CaptureRequest request, @Nullable CameraCaptureSession.CaptureCallback callback)
+      throws CameraAccessException {
+    if (captureSession instanceof CameraConstrainedHighSpeedCaptureSession) {
+      captureSession.captureBurst(
+          ((CameraConstrainedHighSpeedCaptureSession) captureSession)
+              .createHighSpeedRequestList(request),
+          callback,
+          backgroundHandler);
+    } else {
+      captureSession.capture(request, callback, backgroundHandler);
+    }
+  }
+
+  /**
+   * Whether the next recording runs in a constrained high-speed session.
+   *
+   * <p>Not while images are streamed: the session takes two surfaces, the preview and the
+   * recorder. And not zoomed out past 1x: on a camera made of several lenses that is its wide
+   * lens, and a high-speed session stays on the main one, so the recording would not be framed
+   * as the preview was. (Seen on a Pixel 9 Pro Fold, where the wide lens cannot be asked for by
+   * itself in a high-speed session either.) Both record at the regular rate.
+   */
+  @VisibleForTesting
+  boolean recordsAtHighSpeed(boolean streamingImages) {
+    if (highSpeedFps == null || highSpeedFailed || streamingImages) {
+      return false;
+    }
+    if (!SdkCapabilityChecker.supportsSessionConfiguration()) {
+      return false;
+    }
+    final Float zoom = cameraFeatures.getZoomLevel().getValue();
+    return zoom == null || zoom >= 1.0f;
+  }
+
+  /**
+   * Starts a recording in a constrained high-speed session, the only kind that records above the
+   * regular frame rates.
+   *
+   * <p>The session takes two surfaces of one size, so the preview runs at the recording's size
+   * while it lasts, and there is no surface for a still: {@link #takePicture} refuses until the
+   * recording stops. The device also takes over exposure, white balance and focus modes; zoom,
+   * exposure offset and the torch still apply.
+   *
+   * <p>The recorder starts once the exposure has settled (see {@link #onHighSpeedExposure}), and
+   * the app's call is answered then, so a take is timed from its first frame.
+   *
+   * <p>A session that will not start is not an error to the app: the recording starts at the
+   * regular rate instead, into the same file (see {@link #recordRegularInstead}).
+   */
+  @TargetApi(VERSION_CODES.P)
+  private void startHighSpeedCapture() throws CameraAccessException {
+    // Close any existing capture session.
+    captureSession = null;
+
+    previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+
+    final Size size = cameraFeatures.getResolution().getCaptureSize();
+    surfaceProducer.setSize(size.getWidth(), size.getHeight());
+    final Surface flutterSurface = surfaceProducer.getSurface();
+    final Surface recorderSurface = mediaRecorder.getSurface();
+    // Only the preview at first. The recorder's surface joins when the recorder starts: frames
+    // sent to a recorder that is not running are never taken off its queue, and the camera
+    // stalls behind them (the stop after such a start timed out on a Pixel 9 Pro Fold).
+    previewRequestBuilder.addTarget(flutterSurface);
+
+    // Update camera regions.
+    Size cameraBoundaries =
+        CameraRegionUtils.getCameraBoundaries(cameraProperties, previewRequestBuilder);
+    cameraFeatures.getExposurePoint().setCameraBoundaries(cameraBoundaries);
+    cameraFeatures.getFocusPoint().setCameraBoundaries(cameraBoundaries);
+
+    CameraCaptureSession.StateCallback callback =
+        new CameraCaptureSession.StateCallback() {
+          boolean captureSessionClosed = false;
+
+          @Override
+          public void onConfigured(@NonNull CameraCaptureSession session) {
+            Log.i(TAG, "High-speed CameraCaptureSession onConfigured");
+            // Camera was already closed.
+            if (cameraDevice == null || captureSessionClosed) {
+              dartMessenger.sendCameraErrorEvent("The camera was closed during configuration.");
+              return;
+            }
+            captureSession = session;
+            updateBuilderSettings(previewRequestBuilder);
+
+            // The session runs on the preview alone until the exposure has settled (see
+            // onHighSpeedExposure), or for a wait that a session delivering no frames cannot
+            // outlast. Then the recorder starts and its surface joins the request.
+            final long configuredAt = System.nanoTime();
+            synchronized (Camera.this) {
+              highSpeedStart =
+                  () -> {
+                    try {
+                      mediaRecorder.start();
+                      previewRequestBuilder.addTarget(recorderSurface);
+                      if (!pausedPreview) {
+                        setRepeating(previewRequestBuilder.build(), cameraCaptureCallback);
+                      }
+                    } catch (CameraAccessException | RuntimeException e) {
+                      recordRegularInstead(e.getMessage());
+                      return;
+                    }
+                    Log.i(
+                        TAG,
+                        "Recording at "
+                            + highSpeedFps
+                            + " frames a second in a high-speed session, "
+                            + size.getWidth()
+                            + "x"
+                            + size.getHeight()
+                            + ", after "
+                            + (System.nanoTime() - configuredAt) / 1000000
+                            + " ms for the exposure to settle");
+                    answerStart(null);
+                  };
+            }
+            refreshPreviewCaptureSession(
+                () ->
+                    backgroundHandler.postDelayed(
+                        () -> {
+                          final Runnable start = takeHighSpeedStart();
+                          if (start != null) {
+                            start.run();
+                          }
+                        },
+                        HIGH_SPEED_SETTLE_MS),
+                (code, message) -> recordRegularInstead(message));
+          }
+
+          @Override
+          public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
+            Log.i(TAG, "High-speed CameraCaptureSession onConfigureFailed");
+            recordRegularInstead("the session could not be configured");
+          }
+
+          @Override
+          public void onClosed(@NonNull CameraCaptureSession session) {
+            Log.i(TAG, "High-speed CameraCaptureSession onClosed");
+            captureSessionClosed = true;
+          }
+        };
+
+    List<OutputConfiguration> configs = new ArrayList<>();
+    configs.add(new OutputConfiguration(flutterSurface));
+    configs.add(new OutputConfiguration(recorderSurface));
+    try {
+      cameraDevice.createCaptureSession(
+          new SessionConfiguration(
+              SessionConfiguration.SESSION_HIGH_SPEED,
+              configs,
+              Executors.newSingleThreadExecutor(),
+              callback));
+    } catch (IllegalArgumentException | UnsupportedOperationException e) {
+      // The surfaces are checked as the session is made: a size or a kind it does not take.
+      recordRegularInstead(e.getMessage());
+    }
+  }
+
+  /**
+   * Starts the recording in progress at the regular rate, after a high-speed session would not
+   * start. The app asked for a recording and gets one, into the file it was promised; a
+   * high-speed session is not tried again on this camera.
+   */
+  private void recordRegularInstead(@Nullable String reason) {
+    Log.w(
+        TAG,
+        "No high-speed recording ("
+            + reason
+            + "); recording at "
+            + regularRecordingFps
+            + " frames a second instead");
+    highSpeedFailed = true;
+    highSpeedRecording = false;
+    takeHighSpeedStart();
+    if (!recordingVideo || captureFile == null || cameraDevice == null) {
+      answerStart("The recording was stopped before it started.");
+      return;
+    }
+    try {
+      prepareMediaRecorder(captureFile.getAbsolutePath());
+      startCapture(true, false);
+      answerStart(null);
+    } catch (IOException | CameraAccessException | RuntimeException e) {
+      recordingVideo = false;
+      captureFile = null;
+      answerStart(e.getMessage());
     }
   }
 
@@ -616,6 +968,15 @@ class Camera
   }
 
   public void takePicture(@NonNull final Result result) {
+    // A high-speed session has no surface for a still.
+    if (highSpeedRecording) {
+      result.error(
+          "captureUnavailable",
+          "A picture cannot be taken while recording at a high frame rate",
+          null);
+      return;
+    }
+
     // Only take one picture at a time.
     if (cameraCaptureCallback.getCameraState() != CameraState.STATE_PREVIEW) {
       result.error("captureAlreadyActive", "Picture is currently already being captured", null);
@@ -657,8 +1018,7 @@ class Camera
       previewRequestBuilder.set(
           CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
           CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
-      captureSession.capture(
-          previewRequestBuilder.build(), cameraCaptureCallback, backgroundHandler);
+      captureOnce(previewRequestBuilder.build(), cameraCaptureCallback);
 
       // Repeating request to refresh preview session.
       refreshPreviewCaptureSession(
@@ -673,8 +1033,7 @@ class Camera
           CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
 
       // Trigger one capture to start AE sequence.
-      captureSession.capture(
-          previewRequestBuilder.build(), cameraCaptureCallback, backgroundHandler);
+      captureOnce(previewRequestBuilder.build(), cameraCaptureCallback);
 
     } catch (CameraAccessException e) {
       e.printStackTrace();
@@ -787,7 +1146,7 @@ class Camera
         CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
 
     try {
-      captureSession.capture(previewRequestBuilder.build(), null, backgroundHandler);
+      captureOnce(previewRequestBuilder.build(), null);
     } catch (CameraAccessException e) {
       dartMessenger.sendCameraErrorEvent(e.getMessage());
     }
@@ -804,13 +1163,13 @@ class Camera
       // Cancel existing AF state.
       previewRequestBuilder.set(
           CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-      captureSession.capture(previewRequestBuilder.build(), null, backgroundHandler);
+      captureOnce(previewRequestBuilder.build(), null);
 
       // Set AF state to idle again.
       previewRequestBuilder.set(
           CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
 
-      captureSession.capture(previewRequestBuilder.build(), null, backgroundHandler);
+      captureOnce(previewRequestBuilder.build(), null);
     } catch (CameraAccessException e) {
       dartMessenger.sendCameraErrorEvent(e.getMessage());
       return;
@@ -824,6 +1183,7 @@ class Camera
 
   public void startVideoRecording(
       @NonNull Result result, @Nullable EventChannel imageStreamChannel) {
+    highSpeedRecording = recordsAtHighSpeed(imageStreamChannel != null);
     prepareRecording(result);
 
     if (imageStreamChannel != null) {
@@ -832,11 +1192,23 @@ class Camera
     initialCameraFacing = cameraProperties.getLensFacing();
     recordingVideo = true;
     try {
-      startCapture(true, imageStreamChannel != null);
-      result.success(null);
+      if (highSpeedRecording) {
+        // Answered when the recorder starts: see pendingStartResult.
+        synchronized (this) {
+          pendingStartResult = result;
+        }
+        startHighSpeedCapture();
+      } else {
+        startCapture(true, imageStreamChannel != null);
+        result.success(null);
+      }
     } catch (CameraAccessException e) {
       recordingVideo = false;
+      highSpeedRecording = false;
       captureFile = null;
+      synchronized (this) {
+        pendingStartResult = null;
+      }
       result.error("videoRecordingFailed", e.getMessage(), null);
     }
   }
@@ -857,6 +1229,11 @@ class Camera
     cameraFeatures.setAutoFocus(
         cameraFeatureFactory.createAutoFocusFeature(cameraProperties, false));
     recordingVideo = false;
+    // The preview that follows runs in a regular session again.
+    highSpeedRecording = false;
+    // A recording stopped while it still waited for the exposure never started its recorder.
+    takeHighSpeedStart();
+    answerStart(null);
     try {
       closeRenderer();
       captureSession.abortCaptures();
@@ -1014,9 +1391,8 @@ class Camera
               CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
 
           try {
-            captureSession.setRepeatingRequest(
-                previewRequestBuilder.build(), null, backgroundHandler);
-          } catch (CameraAccessException e) {
+            setRepeating(previewRequestBuilder.build(), null);
+          } catch (CameraAccessException | IllegalArgumentException e) {
             if (result != null) {
               result.error(
                   "setFocusModeFailed", "Error setting focus mode: " + e.getMessage(), null);
@@ -1301,6 +1677,12 @@ class Camera
   public void close() {
     Log.i(TAG, "close");
 
+    // A high-speed recording still waiting to start is not left unanswered.
+    if (takeHighSpeedStart() != null) {
+      answerStart("The camera was closed before the recording started.");
+    }
+    highSpeedRecording = false;
+
     stopAndReleaseCamera();
 
     if (pictureImageReader != null) {
@@ -1374,6 +1756,8 @@ class Camera
     }
 
     stopAndReleaseCamera();
+    // The other camera is recorded through the video renderer, in a regular session.
+    highSpeedRecording = false;
     prepareVideoRenderer();
     cameraProperties = properties;
     cameraFeatures =

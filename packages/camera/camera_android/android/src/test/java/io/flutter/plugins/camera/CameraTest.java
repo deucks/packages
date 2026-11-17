@@ -7,6 +7,8 @@ package io.flutter.plugins.camera;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -64,6 +66,24 @@ import org.junit.Test;
 import org.mockito.MockedConstruction;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
+
+/** Refuses to make its first session, as a camera does when it will not take the surfaces. */
+class RefusingCameraDeviceWrapper extends FakeCameraDeviceWrapper {
+  int sessionsAsked;
+
+  RefusingCameraDeviceWrapper(
+      List<CaptureRequest.Builder> captureRequests, CameraCaptureSession session) {
+    super(captureRequests, session);
+  }
+
+  @Override
+  public void createCaptureSession(SessionConfiguration config) {
+    sessionsAsked++;
+    if (sessionsAsked == 1) {
+      throw new IllegalArgumentException("Surface size is not part of the high speed size list");
+    }
+  }
+}
 
 class FakeCameraDeviceWrapper implements CameraDeviceWrapper {
   final List<CaptureRequest.Builder> captureRequests;
@@ -1257,6 +1277,359 @@ public class CameraTest {
     }
   }
 
+  /** A camera asked for 120 frames a second, on a phone whose regular sessions stop at 60. */
+  private Camera cameraAskedFor120(boolean hasHighSpeed) {
+    final Activity mockActivity = mock(Activity.class);
+    final Context mockApplicationContext = mock(Context.class);
+    when(mockActivity.getApplicationContext()).thenReturn(mockApplicationContext);
+
+    @SuppressWarnings("unchecked")
+    final Range<Integer>[] regular =
+        (Range<Integer>[])
+            new Range<?>[] {new Range<Integer>(30, 30), new Range<Integer>(60, 60)};
+    @SuppressWarnings("unchecked")
+    final Range<Integer>[] highSpeed =
+        (Range<Integer>[])
+            new Range<?>[] {new Range<Integer>(30, 120), new Range<Integer>(120, 120)};
+    when(mockCameraProperties.getControlAutoExposureAvailableTargetFpsRanges())
+        .thenReturn(regular);
+    if (hasHighSpeed) {
+      when(mockCameraProperties.getHighSpeedVideoFpsRangesFor(any())).thenReturn(highSpeed);
+    }
+
+    final Size mockSize = mock(Size.class);
+    when(mockSize.getWidth()).thenReturn(1920);
+    when(mockSize.getHeight()).thenReturn(1080);
+    when(mockCameraFeatureFactory.mockResolutionFeature.getCaptureSize()).thenReturn(mockSize);
+    when(mockCameraFeatureFactory.mockResolutionFeature.getPreviewSize()).thenReturn(mockSize);
+
+    return new Camera(
+        mockActivity,
+        mock(TextureRegistry.SurfaceProducer.class),
+        mockCameraFeatureFactory,
+        mockDartMessenger,
+        mockCameraProperties,
+        new Camera.VideoCaptureSettings(ResolutionPreset.veryHigh, false, 120, 40000000, null));
+  }
+
+  private void zoomIs(float zoom) {
+    when(mockCameraFeatureFactory.createZoomLevelFeature(mockCameraProperties).getValue())
+        .thenReturn(zoom);
+  }
+
+  @Test
+  public void aRateAboveTheRegularOnes_keepsThePreviewAtTheHighestRegularRate() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+
+    final Camera camera = cameraAskedFor120(true);
+
+    assertEquals(Integer.valueOf(120), camera.highSpeedFps);
+    assertEquals(Integer.valueOf(60), camera.cameraFeatures.getFpsRange().getValue().getLower());
+    assertEquals(Integer.valueOf(60), camera.cameraFeatures.getFpsRange().getValue().getUpper());
+  }
+
+  @Test
+  public void aRateAboveTheRegularOnes_isNotHighSpeedOnACameraWithout() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+
+    final Camera camera = cameraAskedFor120(false);
+
+    assertNull(camera.highSpeedFps);
+    assertEquals(Integer.valueOf(60), camera.cameraFeatures.getFpsRange().getValue().getUpper());
+  }
+
+  @Test
+  public void aRateAboveTheRegularOnes_isNotHighSpeedBeforeSessionConfigurations() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.O_MR1;
+
+    final Camera camera = cameraAskedFor120(true);
+
+    assertNull(camera.highSpeedFps);
+    verify(mockCameraProperties, never()).getHighSpeedVideoFpsRangesFor(any());
+  }
+
+  @Test
+  public void recordsAtHighSpeed_onlyAtOneTimesZoomOrTighter() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(true);
+
+    zoomIs(1.0f);
+    assertTrue(camera.recordsAtHighSpeed(false));
+    zoomIs(2.5f);
+    assertTrue(camera.recordsAtHighSpeed(false));
+    // The wide lens of a camera made of several: a high-speed session stays on the main one.
+    zoomIs(0.51f);
+    assertFalse(camera.recordsAtHighSpeed(false));
+  }
+
+  @Test
+  public void recordsAtHighSpeed_notWhileImagesAreStreamed() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(true);
+    zoomIs(1.0f);
+
+    assertFalse(camera.recordsAtHighSpeed(true));
+  }
+
+  @Test
+  public void recordsAtHighSpeed_notOnACameraWithout() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(false);
+    zoomIs(1.0f);
+
+    assertFalse(camera.recordsAtHighSpeed(false));
+  }
+
+  @Test
+  public void takePicture_isRefusedWhileRecordingAtHighSpeed() {
+    MethodChannel.Result mockResult = mock(MethodChannel.Result.class);
+    camera.highSpeedRecording = true;
+
+    camera.takePicture(mockResult);
+
+    verify(mockResult).error(eq("captureUnavailable"), any(), any());
+  }
+
+  @Test
+  public void startVideoRecording_recordsInAHighSpeedSessionOnceTheExposureSettles()
+      throws InterruptedException, IOException, CameraAccessException {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+
+    try (final MockedStatic<File> mockFile = mockStatic(File.class);
+        final MockedConstruction<MediaRecorder> mockMediaRecorders =
+            Mockito.mockConstruction(MediaRecorder.class)) {
+      mockFile
+          .when(() -> File.createTempFile(any(), any(), any()))
+          .thenReturn(new File("/tmp/file.mp4"));
+
+      final Camera camera = spy(cameraAskedFor120(true));
+      zoomIs(1.0f);
+
+      final CamcorderProfile mockProfileLegacy = mock(CamcorderProfile.class);
+      mockProfileLegacy.videoFrameRate = 30;
+      when(camera.getRecordingProfileLegacy()).thenReturn(mockProfileLegacy);
+      final SensorOrientationFeature mockSensorOrientationFeature =
+          mockCameraFeatureFactory.createSensorOrientationFeature(mockCameraProperties, null, null);
+      when(mockSensorOrientationFeature.getDeviceOrientationManager())
+          .thenReturn(mock(DeviceOrientationManager.class));
+
+      final ArrayList<CaptureRequest.Builder> mockRequestBuilders = new ArrayList<>();
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      final ImageReader mockPictureImageReader = mock(ImageReader.class);
+      camera.pictureImageReader = mockPictureImageReader;
+      final CameraConstrainedHighSpeedCaptureSession mockHighSpeedSession =
+          mock(CameraConstrainedHighSpeedCaptureSession.class);
+      camera.cameraDevice = new FakeCameraDeviceWrapper(mockRequestBuilders, mockHighSpeedSession);
+      final MethodChannel.Result mockResult = mock(MethodChannel.Result.class);
+
+      final List<Object> sessionTypes = new ArrayList<>();
+      final List<Object> sessionOutputs = new ArrayList<>();
+      try (MockedConstruction<SessionConfiguration> sessions =
+          Mockito.mockConstruction(
+              SessionConfiguration.class,
+              (mock, context) -> {
+                sessionTypes.add(context.arguments().get(0));
+                sessionOutputs.add(context.arguments().get(1));
+                when(mock.getStateCallback())
+                    .thenReturn((CameraCaptureSession.StateCallback) context.arguments().get(3));
+              })) {
+        camera.startVideoRecording(mockResult, null);
+      }
+
+      assertEquals(1, sessionTypes.size());
+      assertEquals(SessionConfiguration.SESSION_HIGH_SPEED, sessionTypes.get(0));
+      // The preview and the recorder, and no surface for a still.
+      assertEquals(2, ((List<?>) sessionOutputs.get(0)).size());
+      verify(mockPictureImageReader, never()).getSurface();
+      assertTrue(camera.highSpeedRecording);
+
+      // The session repeats a burst, at the high-speed rate: on the preview alone at first.
+      verify(mockHighSpeedSession, times(1)).setRepeatingBurst(any(), any(), any());
+      verify(mockHighSpeedSession, never()).setRepeatingRequest(any(), any(), any());
+      final CaptureRequest.Builder requestBuilder = camera.previewRequestBuilder;
+      verify(requestBuilder, times(1)).addTarget(any());
+
+      // Set up for 120, and neither started nor answered while the exposure is still moving.
+      final MediaRecorder recorder = mockMediaRecorders.constructed().get(0);
+      verify(recorder).setVideoFrameRate(120);
+      verify(recorder).setCaptureRate(120.0);
+      camera.onHighSpeedExposure(CaptureResult.CONTROL_AE_STATE_SEARCHING);
+      verify(recorder, never()).start();
+      verify(mockDartMessenger, never()).finish(any(), any());
+      verify(mockResult, never()).success(any());
+
+      // Settled: the recorder starts, its surface joins the request, and only now is the app
+      // told so.
+      camera.onHighSpeedExposure(CaptureResult.CONTROL_AE_STATE_CONVERGED);
+      verify(recorder).start();
+      verify(requestBuilder, times(2)).addTarget(any());
+      verify(mockHighSpeedSession, times(2)).setRepeatingBurst(any(), any(), any());
+      verify(mockDartMessenger).finish(mockResult, null);
+
+      // Once.
+      camera.onHighSpeedExposure(CaptureResult.CONTROL_AE_STATE_CONVERGED);
+      verify(recorder, times(1)).start();
+      verify(mockDartMessenger, times(1)).finish(mockResult, null);
+    }
+  }
+
+  @Test
+  public void stopVideoRecording_answersAHighSpeedStartThatNeverSettled()
+      throws InterruptedException, IOException, CameraAccessException {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+
+    try (final MockedStatic<File> mockFile = mockStatic(File.class);
+        final MockedConstruction<MediaRecorder> mockMediaRecorders =
+            Mockito.mockConstruction(MediaRecorder.class)) {
+      mockFile
+          .when(() -> File.createTempFile(any(), any(), any()))
+          .thenReturn(new File("/tmp/file.mp4"));
+
+      final Camera camera = spy(cameraAskedFor120(true));
+      zoomIs(1.0f);
+
+      final CamcorderProfile mockProfileLegacy = mock(CamcorderProfile.class);
+      mockProfileLegacy.videoFrameRate = 30;
+      when(camera.getRecordingProfileLegacy()).thenReturn(mockProfileLegacy);
+      final SensorOrientationFeature mockSensorOrientationFeature =
+          mockCameraFeatureFactory.createSensorOrientationFeature(mockCameraProperties, null, null);
+      when(mockSensorOrientationFeature.getDeviceOrientationManager())
+          .thenReturn(mock(DeviceOrientationManager.class));
+
+      final ArrayList<CaptureRequest.Builder> mockRequestBuilders = new ArrayList<>();
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      final ImageReader mockPictureImageReader = mock(ImageReader.class);
+      camera.pictureImageReader = mockPictureImageReader;
+      final CameraConstrainedHighSpeedCaptureSession mockHighSpeedSession =
+          mock(CameraConstrainedHighSpeedCaptureSession.class);
+      camera.cameraDevice = new FakeCameraDeviceWrapper(mockRequestBuilders, mockHighSpeedSession);
+      when(mockPictureImageReader.getSurface()).thenReturn(mock(Surface.class));
+      final MethodChannel.Result mockStartResult = mock(MethodChannel.Result.class);
+      final MethodChannel.Result mockStopResult = mock(MethodChannel.Result.class);
+
+      try (MockedConstruction<SessionConfiguration> sessions =
+          Mockito.mockConstruction(
+              SessionConfiguration.class,
+              (mock, context) ->
+                  when(mock.getStateCallback())
+                      .thenReturn(
+                          (CameraCaptureSession.StateCallback) context.arguments().get(3)))) {
+        camera.startVideoRecording(mockStartResult, null);
+        verify(mockDartMessenger, never()).finish(any(), any());
+
+        camera.stopVideoRecording(mockStopResult);
+      }
+
+      // The start is answered, so the app is not left waiting, and the recorder never started.
+      verify(mockDartMessenger).finish(mockStartResult, null);
+      verify(mockMediaRecorders.constructed().get(0), never()).start();
+      assertFalse(camera.highSpeedRecording);
+
+      // Nothing starts it afterwards either.
+      camera.onHighSpeedExposure(CaptureResult.CONTROL_AE_STATE_CONVERGED);
+      verify(mockMediaRecorders.constructed().get(0), never()).start();
+    }
+  }
+
+  @Test
+  public void startVideoRecording_recordsInARegularSessionWhenZoomedOutToTheWideLens()
+      throws InterruptedException, IOException, CameraAccessException {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera cameraSpy = spy(cameraAskedFor120(true));
+    zoomIs(0.51f);
+
+    final ArrayList<CaptureRequest.Builder> mockRequestBuilders = new ArrayList<>();
+    mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+    final MediaRecorder mockMediaRecorder = mock(MediaRecorder.class);
+    final ImageReader mockPictureImageReader = mock(ImageReader.class);
+    cameraSpy.mediaRecorder = mockMediaRecorder;
+    cameraSpy.pictureImageReader = mockPictureImageReader;
+    cameraSpy.cameraDevice = new FakeCameraDeviceWrapper(mockRequestBuilders);
+    final MethodChannel.Result mockResult = mock(MethodChannel.Result.class);
+    doNothing().when(cameraSpy).prepareRecording(mockResult);
+
+    final List<Object> sessionTypes = new ArrayList<>();
+    try (MockedConstruction<SessionConfiguration> sessions =
+        Mockito.mockConstruction(
+            SessionConfiguration.class,
+            (mock, context) -> sessionTypes.add(context.arguments().get(0)))) {
+      cameraSpy.startVideoRecording(mockResult, null);
+    }
+
+    assertEquals(1, sessionTypes.size());
+    assertEquals(SessionConfiguration.SESSION_REGULAR, sessionTypes.get(0));
+    assertFalse(cameraSpy.highSpeedRecording);
+    // A regular recording answers the app at once, as it always did.
+    verify(mockResult).success(null);
+  }
+
+  @Test
+  public void startVideoRecording_recordsAtTheRegularRateWhenTheHighSpeedSessionIsRefused()
+      throws InterruptedException, IOException, CameraAccessException {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+
+    try (final MockedStatic<File> mockFile = mockStatic(File.class);
+        final MockedConstruction<MediaRecorder> mockMediaRecorders =
+            Mockito.mockConstruction(MediaRecorder.class)) {
+      mockFile
+          .when(() -> File.createTempFile(any(), any(), any()))
+          .thenReturn(new File("/tmp/file.mp4"));
+
+      final Camera camera = spy(cameraAskedFor120(true));
+      zoomIs(1.0f);
+
+      final CamcorderProfile mockProfileLegacy = mock(CamcorderProfile.class);
+      mockProfileLegacy.videoFrameRate = 30;
+      when(camera.getRecordingProfileLegacy()).thenReturn(mockProfileLegacy);
+      final SensorOrientationFeature mockSensorOrientationFeature =
+          mockCameraFeatureFactory.createSensorOrientationFeature(mockCameraProperties, null, null);
+      when(mockSensorOrientationFeature.getDeviceOrientationManager())
+          .thenReturn(mock(DeviceOrientationManager.class));
+
+      final ArrayList<CaptureRequest.Builder> mockRequestBuilders = new ArrayList<>();
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      mockRequestBuilders.add(mock(CaptureRequest.Builder.class));
+      camera.pictureImageReader = mock(ImageReader.class);
+      final RefusingCameraDeviceWrapper refusingCamera =
+          new RefusingCameraDeviceWrapper(mockRequestBuilders, mockCaptureSession);
+      camera.cameraDevice = refusingCamera;
+      final MethodChannel.Result mockResult = mock(MethodChannel.Result.class);
+
+      final List<Object> sessionTypes = new ArrayList<>();
+      try (MockedConstruction<SessionConfiguration> sessions =
+          Mockito.mockConstruction(
+              SessionConfiguration.class,
+              (mock, context) -> sessionTypes.add(context.arguments().get(0)))) {
+        camera.startVideoRecording(mockResult, null);
+      }
+
+      // Asked for a high-speed session, refused, and then for a regular one.
+      assertEquals(2, sessionTypes.size());
+      assertEquals(SessionConfiguration.SESSION_HIGH_SPEED, sessionTypes.get(0));
+      assertEquals(SessionConfiguration.SESSION_REGULAR, sessionTypes.get(1));
+      assertFalse(camera.highSpeedRecording);
+      // The app asked for a recording and was not told of an error.
+      verify(mockDartMessenger).finish(mockResult, null);
+      verify(mockDartMessenger, never()).error(any(), any(), any(), any());
+      verify(mockDartMessenger, never()).sendCameraErrorEvent(any());
+
+      // The first recorder was set up for 120, the one that records for 60.
+      assertEquals(2, mockMediaRecorders.constructed().size());
+      final MediaRecorder first = mockMediaRecorders.constructed().get(0);
+      verify(first).setVideoFrameRate(120);
+      verify(first).setCaptureRate(120.0);
+      final MediaRecorder second = mockMediaRecorders.constructed().get(1);
+      verify(second).setVideoFrameRate(60);
+      verify(second, never()).setCaptureRate(anyDouble());
+      assertEquals(second, camera.mediaRecorder);
+
+      // And a high-speed session is not tried again on this camera.
+      assertFalse(camera.recordsAtHighSpeed(false));
+    }
+  }
+
   @Test
   public void pausePreview_doesNotCallStopRepeatingWhenCameraClosed() throws CameraAccessException {
     ArrayList<CaptureRequest.Builder> mockRequestBuilders = new ArrayList<>();
@@ -1289,9 +1662,9 @@ public class CameraTest {
                 lowers.put((Range<Integer>) mock, lower);
                 uppers.put((Range<Integer>) mock, upper);
                 when(((Range<Integer>) mock).getUpper())
-                    .thenReturn(lowers.getOrDefault((Range<Integer>) mock, 15));
-                when(((Range<Integer>) mock).getLower())
                     .thenReturn(uppers.getOrDefault((Range<Integer>) mock, 15));
+                when(((Range<Integer>) mock).getLower())
+                    .thenReturn(lowers.getOrDefault((Range<Integer>) mock, 15));
                 when(mock.toString())
                     .thenReturn(
                         String.format(

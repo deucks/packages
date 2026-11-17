@@ -75,6 +75,48 @@ public class MediaRecorderBuilderTest {
   @Config(maxSdk = 30)
   @SuppressWarnings("deprecation")
   @Test
+  public void build_shouldSetTheCaptureRateOfAHighSpeedRecording() throws IOException {
+    CamcorderProfile recorderProfile = getEmptyCamcorderProfile();
+    MediaRecorderBuilder.MediaRecorderFactory mockFactory =
+        mock(MediaRecorderBuilder.MediaRecorderFactory.class);
+    MediaRecorder mockMediaRecorder = mock(MediaRecorder.class);
+    when(mockFactory.makeMediaRecorder()).thenReturn(mockMediaRecorder);
+
+    new MediaRecorderBuilder(
+            recorderProfile,
+            mockFactory,
+            new MediaRecorderBuilder.RecordingParameters(
+                "mock_video_file_path", 120, testVideoBitrate, null, true))
+        .setEnableAudio(false)
+        .build();
+
+    InOrder inOrder = inOrder(mockMediaRecorder);
+    inOrder.verify(mockMediaRecorder).setVideoFrameRate(120);
+    inOrder.verify(mockMediaRecorder).setCaptureRate(120.0);
+    inOrder.verify(mockMediaRecorder).prepare();
+  }
+
+  @Test
+  public void build_shouldLeaveTheCaptureRateOfARegularRecordingAlone() throws IOException {
+    CamcorderProfile recorderProfile = getEmptyCamcorderProfile();
+    MediaRecorderBuilder.MediaRecorderFactory mockFactory =
+        mock(MediaRecorderBuilder.MediaRecorderFactory.class);
+    MediaRecorder mockMediaRecorder = mock(MediaRecorder.class);
+    when(mockFactory.makeMediaRecorder()).thenReturn(mockMediaRecorder);
+
+    new MediaRecorderBuilder(
+            recorderProfile,
+            mockFactory,
+            new MediaRecorderBuilder.RecordingParameters(
+                "mock_video_file_path", 60, testVideoBitrate, null))
+        .setEnableAudio(false)
+        .build();
+
+    verify(mockMediaRecorder).setVideoFrameRate(60);
+    verify(mockMediaRecorder, never()).setCaptureRate(anyDouble());
+  }
+
+  @Test
   public void build_shouldSetValuesInCorrectOrderWhenAudioIsDisabledLegacy() throws IOException {
     CamcorderProfile recorderProfile = getEmptyCamcorderProfile();
     MediaRecorderBuilder.MediaRecorderFactory mockFactory =

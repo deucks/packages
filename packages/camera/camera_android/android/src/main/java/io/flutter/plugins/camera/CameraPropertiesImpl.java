@@ -8,6 +8,8 @@ import android.graphics.Rect;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CameraMetadata;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build.VERSION_CODES;
 import android.util.Range;
 import android.util.Rational;
@@ -15,6 +17,7 @@ import android.util.Size;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
+import java.util.Arrays;
 
 /**
  * Implementation of the @see CameraProperties interface using the @see
@@ -40,6 +43,41 @@ public class CameraPropertiesImpl implements CameraProperties {
   @Override
   public Range<Integer>[] getControlAutoExposureAvailableTargetFpsRanges() {
     return cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+  }
+
+  @NonNull
+  @Override
+  @SuppressWarnings("unchecked")
+  public Range<Integer>[] getHighSpeedVideoFpsRangesFor(@NonNull Size size) {
+    final Range<Integer>[] none = (Range<Integer>[]) new Range<?>[0];
+
+    final int[] capabilities =
+        cameraCharacteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+    boolean highSpeed = false;
+    if (capabilities != null) {
+      for (int capability : capabilities) {
+        if (capability
+            == CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO) {
+          highSpeed = true;
+        }
+      }
+    }
+    if (!highSpeed) {
+      return none;
+    }
+
+    final StreamConfigurationMap map =
+        cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+    if (map == null) {
+      return none;
+    }
+    // Asking for the ranges of a size the camera does not list throws.
+    final Size[] sizes = map.getHighSpeedVideoSizes();
+    if (sizes == null || !Arrays.asList(sizes).contains(size)) {
+      return none;
+    }
+    final Range<Integer>[] ranges = map.getHighSpeedVideoFpsRangesFor(size);
+    return ranges == null ? none : ranges;
   }
 
   @NonNull
