@@ -167,6 +167,13 @@ class Camera
   @VisibleForTesting static final long HIGH_SPEED_SETTLE_MS = 1000;
 
   /**
+   * The widest zoom a high-speed recording is made at. On a camera made of several lenses a zoom
+   * under 1x is its wide lens, and a high-speed session stays on the main one (see {@link
+   * #recordsAtHighSpeed}).
+   */
+  @VisibleForTesting static final float HIGH_SPEED_WIDEST_ZOOM = 1.0f;
+
+  /**
    * What starts the recorder of a high-speed recording, held until the exposure has settled; null
    * at every other time. See {@link #onHighSpeedExposure}.
    */
@@ -789,7 +796,32 @@ class Camera
       return false;
     }
     final Float zoom = cameraFeatures.getZoomLevel().getValue();
-    return zoom == null || zoom >= 1.0f;
+    return zoom == null || zoom >= HIGH_SPEED_WIDEST_ZOOM;
+  }
+
+  /**
+   * The widest zoom at which a recording runs at the rate the app asked for, when that rate is
+   * above the regular ones; null when no zoom gives it and every recording runs at the regular
+   * rate.
+   *
+   * <p>For an app that would sooner have the rate than the widest picture: it starts its zoom
+   * here, and at the camera's widest when this is null. The answer is 1x on a camera whose
+   * widest zoom is its wide lens, and the camera's own widest zoom when that is tighter. A
+   * camera whose wide lens records at the rate would answer with less than 1x: this does not
+   * look for one, because the only phone it has been tried on (a Pixel 9 Pro Fold) refuses a
+   * high-speed session on its wide lens though it lists the rate for it.
+   *
+   * <p>Null too once a high-speed session has failed to start on this camera: it is not tried
+   * again until the camera is reopened.
+   */
+  @Nullable
+  public Float getHighSpeedMinZoomLevel() {
+    if (highSpeedFps == null
+        || highSpeedFailed
+        || !SdkCapabilityChecker.supportsSessionConfiguration()) {
+      return null;
+    }
+    return Math.max(HIGH_SPEED_WIDEST_ZOOM, cameraFeatures.getZoomLevel().getMinimumZoomLevel());
   }
 
   /**

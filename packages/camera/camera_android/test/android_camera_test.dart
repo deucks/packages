@@ -1035,6 +1035,31 @@ void main() {
       ]);
     });
 
+    test('Should get the zoom from which the high rate records', () async {
+      final MethodChannelMock channel = MethodChannelMock(
+        channelName: _channelName,
+        methods: <String, dynamic>{'getHighSpeedMinZoomLevel': 1.0},
+      );
+
+      final double? zoom = await camera.getHighSpeedMinZoomLevel(cameraId);
+
+      expect(zoom, 1.0);
+      expect(channel.log, <Matcher>[
+        isMethodCall('getHighSpeedMinZoomLevel', arguments: <String, Object?>{
+          'cameraId': cameraId,
+        }),
+      ]);
+    });
+
+    test('Should get null when no zoom records at the high rate', () async {
+      MethodChannelMock(
+        channelName: _channelName,
+        methods: <String, dynamic>{'getHighSpeedMinZoomLevel': null},
+      );
+
+      expect(await camera.getHighSpeedMinZoomLevel(cameraId), isNull);
+    });
+
     test('Should set the zoom level', () async {
       // Arrange
       final MethodChannelMock channel = MethodChannelMock(

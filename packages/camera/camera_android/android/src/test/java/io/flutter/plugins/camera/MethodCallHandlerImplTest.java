@@ -9,6 +9,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.hardware.camera2.CameraAccessException;
@@ -64,6 +65,24 @@ public class MethodCallHandlerImplTest {
     handler.onMethodCall(new MethodCall("pausePreview", null), mockResult);
 
     verify(mockResult, times(1)).error("CameraAccess", null, null);
+  }
+
+  @Test
+  public void onMethodCall_getHighSpeedMinZoomLevel_shouldSendTheZoomAsADouble() {
+    when(mockCamera.getHighSpeedMinZoomLevel()).thenReturn(1.0f);
+
+    handler.onMethodCall(new MethodCall("getHighSpeedMinZoomLevel", null), mockResult);
+
+    verify(mockResult, times(1)).success(1.0);
+  }
+
+  @Test
+  public void onMethodCall_getHighSpeedMinZoomLevel_shouldSendNullWhenNoZoomGivesTheRate() {
+    when(mockCamera.getHighSpeedMinZoomLevel()).thenReturn(null);
+
+    handler.onMethodCall(new MethodCall("getHighSpeedMinZoomLevel", null), mockResult);
+
+    verify(mockResult, times(1)).success(null);
   }
 
   @Test

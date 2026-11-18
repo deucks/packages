@@ -492,6 +492,23 @@ class AndroidCamera extends CameraPlatform {
     return minZoomLevel!;
   }
 
+  /// The widest zoom at which a recording runs at the frame rate the camera
+  /// was created with, when that rate is above the regular ones (120, where
+  /// a regular session records up to 60); null when no zoom gives it and
+  /// every recording runs at the regular rate.
+  ///
+  /// Not part of [CameraPlatform]: only this implementation records above
+  /// the regular rates, in a high-speed session, and only from the zoom it
+  /// answers with (1x on a camera whose widest zoom is its wide lens). An
+  /// app that would sooner have the rate than the widest picture starts its
+  /// zoom there, and at [getMinZoomLevel] when the answer is null.
+  Future<double?> getHighSpeedMinZoomLevel(int cameraId) {
+    return _channel.invokeMethod<double>(
+      'getHighSpeedMinZoomLevel',
+      <String, dynamic>{'cameraId': cameraId},
+    );
+  }
+
   @override
   Future<void> setZoomLevel(int cameraId, double zoom) async {
     try {

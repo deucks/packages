@@ -1362,6 +1362,52 @@ public class CameraTest {
     assertFalse(camera.recordsAtHighSpeed(false));
   }
 
+  private void widestZoomIs(float zoom) {
+    when(mockCameraFeatureFactory.createZoomLevelFeature(mockCameraProperties).getMinimumZoomLevel())
+        .thenReturn(zoom);
+  }
+
+  @Test
+  public void getHighSpeedMinZoomLevel_isOneTimesOnACameraWhoseWidestIsItsWideLens() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(true);
+    widestZoomIs(0.51f);
+
+    assertEquals(Float.valueOf(1.0f), camera.getHighSpeedMinZoomLevel());
+    // And it is the zoom from which a recording is in fact made at the rate.
+    zoomIs(camera.getHighSpeedMinZoomLevel());
+    assertTrue(camera.recordsAtHighSpeed(false));
+  }
+
+  @Test
+  public void getHighSpeedMinZoomLevel_isTheCamerasWidestWhenThatIsTighter() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(true);
+    widestZoomIs(1.0f);
+    assertEquals(Float.valueOf(1.0f), camera.getHighSpeedMinZoomLevel());
+
+    widestZoomIs(2.0f);
+    assertEquals(Float.valueOf(2.0f), camera.getHighSpeedMinZoomLevel());
+  }
+
+  @Test
+  public void getHighSpeedMinZoomLevel_isNullOnACameraWithout() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
+    final Camera camera = cameraAskedFor120(false);
+    widestZoomIs(0.51f);
+
+    assertNull(camera.getHighSpeedMinZoomLevel());
+  }
+
+  @Test
+  public void getHighSpeedMinZoomLevel_isNullBeforeSessionConfigurations() {
+    SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.O_MR1;
+    final Camera camera = cameraAskedFor120(true);
+    widestZoomIs(0.51f);
+
+    assertNull(camera.getHighSpeedMinZoomLevel());
+  }
+
   @Test
   public void recordsAtHighSpeed_notWhileImagesAreStreamed() {
     SdkCapabilityChecker.SDK_VERSION = Build.VERSION_CODES.P;
@@ -1627,6 +1673,8 @@ public class CameraTest {
 
       // And a high-speed session is not tried again on this camera.
       assertFalse(camera.recordsAtHighSpeed(false));
+      // So no zoom gives the rate any more, and an app is told so.
+      assertNull(camera.getHighSpeedMinZoomLevel());
     }
   }
 

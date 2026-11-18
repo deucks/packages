@@ -297,6 +297,19 @@ final class MethodCallHandlerImpl implements MethodChannel.MethodCallHandler {
           }
           break;
         }
+      case "getHighSpeedMinZoomLevel":
+        {
+          assert camera != null;
+
+          try {
+            // Null when no zoom records at the rate asked for.
+            final Float zoom = camera.getHighSpeedMinZoomLevel();
+            result.success(zoom == null ? null : zoom.doubleValue());
+          } catch (Exception e) {
+            handleException(e, result);
+          }
+          break;
+        }
       case "setZoomLevel":
         {
           assert camera != null;
